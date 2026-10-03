@@ -41,6 +41,20 @@ def fingerprint(der):
     return " ".join(h[i:i + 4] for i in range(0, 16, 4))
 
 
+def parse_env_pem(raw):
+    """Accepts a PEM pasted in almost any mangled form: quotes, 'MESHSOS_KEY_PEM=' prefix,
+    literal \\n, doubled backslashes, or spaces instead of line breaks. Returns clean PEM bytes or None."""
+    import re
+    t = raw.strip().strip('"').strip("'")
+    m = re.search(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", t, re.S)
+    if not m:
+        return None
+    body = re.sub(r"(\\+n|\\+r|\s)", "", m.group(2))
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    name = m.group(1)
+    return ("-----BEGIN %s-----\n%s\n-----END %s-----\n" % (name, "\n".join(lines), name)).encode()
+
+
 def lan_ips():
     ips = set()
     try:
@@ -68,9 +82,14 @@ class Store:
         self.pub_der = b""
         if HAVE_CRYPTO:
             key_path = os.path.join(data_dir, "server_key.pem")
-            env_pem = os.environ.get("MESHSOS_KEY_PEM", "").replace("\\n", "\n").strip()
-            if env_pem:   # hosted: keep the SAME key across restarts (free hosts wipe the disk)
-                self.priv = serialization.load_pem_private_key(env_pem.encode(), password=None)
+            env_raw = os.environ.get("MESHSOS_KEY_PEM", "")
+            if env_raw.strip():   # hosted: keep the SAME key across restarts (free hosts wipe the disk)
+                try:
+                    self.priv = serialization.load_pem_private_key(parse_env_pem(env_raw), password=None)
+                except Exception as e:
+                    print("!! MESHSOS_KEY_PEM is invalid (%s). Using a NEW temporary key instead." % type(e).__name__)
+                    print("!! Phones will re-fetch the new key automatically, but fix the variable to keep it stable.", flush=True)
+                    self.priv = ec.generate_private_key(ec.SECP256R1())
             elif os.path.exists(key_path):
                 with open(key_path, "rb") as f:
                     self.priv = serialization.load_pem_private_key(f.read(), password=None)
