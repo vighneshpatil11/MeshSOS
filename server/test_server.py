@@ -68,7 +68,10 @@ class Store:
         self.pub_der = b""
         if HAVE_CRYPTO:
             key_path = os.path.join(data_dir, "server_key.pem")
-            if os.path.exists(key_path):
+            env_pem = os.environ.get("MESHSOS_KEY_PEM", "").replace("\\n", "\n").strip()
+            if env_pem:   # hosted: keep the SAME key across restarts (free hosts wipe the disk)
+                self.priv = serialization.load_pem_private_key(env_pem.encode(), password=None)
+            elif os.path.exists(key_path):
                 with open(key_path, "rb") as f:
                     self.priv = serialization.load_pem_private_key(f.read(), password=None)
             else:
@@ -205,6 +208,8 @@ class Store:
 
 STORE = None
 PORT = 8080
+ADMIN_PW = os.environ.get("MESHSOS_ADMIN_PASSWORD", "")
+PROTECTED = ("/", "/dashboard", "/index.html", "/api/info", "/api/emergencies")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -225,11 +230,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _auth(self):
+        if not ADMIN_PW:
+            return True
+        h = self.headers.get("Authorization", "")
+        try:
+            user_pw = base64.b64decode(h.split(" ", 1)[1]).decode()
+            if hmac.compare_digest(user_pw.split(":", 1)[1], ADMIN_PW):
+                return True
+        except Exception:
+            pass
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="MeshSOS"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_OPTIONS(self):
         self._send(204, b"")
 
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path in PROTECTED and not self._auth():
+            return
         if path in ("/", "/dashboard", "/index.html"):
             self._send(200, DASHBOARD, "text/html")
         elif path == "/api/pubkey":
@@ -321,10 +344,11 @@ def main():
     global STORE, PORT
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="0.0.0.0")
-    ap.add_argument("--port", type=int, default=8080)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     ap.add_argument("--data-dir", default=HERE)
     ap.add_argument("--public-url", default="https://YOUR-PUBLIC-SERVER-URL",
                     help="the stable URL phones should use (e.g. https://xyz.trycloudflare.com)")
+    ap.add_argument("--print-env", action="store_true", help="print MESHSOS_KEY_PEM value for a hosting provider")
     a = ap.parse_args()
     PORT = a.port
     STORE = Store(a.data_dir)
@@ -334,6 +358,11 @@ def main():
             json.dump({"serverUrl": a.public_url, "publicKey": base64.b64encode(STORE.pub_der).decode()}, f, indent=1)
         print("  Wrote %s -> upload it to a public URL (GitHub raw/gist) and put that URL in" % cfg)
         print("  gradle.properties as MESHSOS_CONFIG_URL. Phones then find the server automatically.")
+    if a.print_env and STORE.priv:
+        pem = STORE.priv.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                       serialization.NoEncryption()).decode()
+        print("\nMESHSOS_KEY_PEM=" + pem.strip().replace("\n", "\\n") + "\n")
+        return
     srv = ThreadingHTTPServer((a.host, a.port), Handler)
     srv.daemon_threads = True
     print("MeshSOS server running.")
