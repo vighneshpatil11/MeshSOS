@@ -124,7 +124,7 @@ class Store:
                 "contact": None, "phone": None, "device": None, "activatedAt": None, "status": "ACTIVE", "decrypted": False,
                 "decryptError": None, "firstReceivedAt": now, "lastUpdatedAt": now,
                 "packetsReceived": 0, "locations": [], "nearby": {}, "paths": [],
-                "acks": [], "cancelHash": "", "pendingCancel": "", "seenKeys": [], "raw": []}
+                "acks": [], "messages": [], "cancelHash": "", "pendingCancel": "", "seenKeys": [], "raw": []}
 
     def ingest(self, p, gw):
         tag, typ, seq = p["tag"], p["t"], p["s"]
@@ -185,6 +185,10 @@ class Store:
                              ("activatedAt", "activatedAt")):
             if d.get(k_src) is not None:
                 rec[k_dst] = d[k_src]
+        msg = d.get("message")
+        msgs = rec.setdefault("messages", [])
+        if msg and (not msgs or msgs[-1]["text"] != msg):
+            msgs.append({"t": int(time.time() * 1000), "text": msg})
         have = {(l["t"], l["lat"], l["lon"]) for l in rec["locations"]}
         for l in d.get("locations", []):
             if (l["t"], l["lat"], l["lon"]) not in have:
@@ -217,7 +221,7 @@ class Store:
         with self.lock:
             out = []
             for r in self.records.values():
-                r.setdefault("phone", None); r.setdefault("device", None)
+                r.setdefault("messages", []); r.setdefault("phone", None); r.setdefault("device", None)
                 c = {k: v for k, v in r.items() if k not in ("raw", "seenKeys", "pendingCancel")}
                 c["nearby"] = list(r["nearby"].values())
                 out.append(c)
@@ -346,6 +350,7 @@ function card(r){
  if(last)h+='Latest: <a target="_blank" href="https://maps.google.com/?q='+last.lat+','+last.lon+'">'+last.lat.toFixed(6)+', '+last.lon.toFixed(6)+'</a> <small>±'+Math.round(last.acc)+'m at '+T(last.t)+' ('+L.length+' fixes)</small>'+track(L);
  else if(r.decrypted)h+='<small>No location fix yet</small>';
  const seen={};r.paths.filter(p=>p.type<3).forEach(p=>{seen[p.path.join('>')+'|'+p.gateway]=p});
+ if(r.messages&&r.messages.length)h+='<h4>Messages from victim</h4>'+r.messages.map(m=>'<div>'+T(m.t)+' &mdash; <b>'+esc(m.text)+'</b></div>').join('');
  h+='<h4>Relay trail</h4>'+Object.values(seen).map(p=>'<div class="path">'+p.path.map(esc).join(' &rarr; ')+' &rarr; <b>'+esc(p.gateway)+'</b> (gateway) <small>'+p.hops+' hops</small></div>').join('');
  if(r.nearby.length)h+='<h4>Nearby observations <small>(possible proximity nodes - NOT confirmed suspects)</small></h4><table><tr><th>Node</th><th>Seen</th><th>First</th><th>Last</th><th>RSSI</th></tr>'+
   r.nearby.map(n=>'<tr><td>'+esc(n.id)+'</td><td>'+n.n+'x</td><td>'+T(n.first)+'</td><td>'+T(n.last)+'</td><td>'+esc(n.rssi)+'</td></tr>').join('')+'</table>';
